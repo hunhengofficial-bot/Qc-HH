@@ -9,25 +9,26 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{
-  --bg:#15161A;
-  --bg-raised:#1C1D23;
-  --bg-card:#20212A;
-  --line:#2D2F3A;
-  --line-soft:#26272F;
-  --text:#EDEEF2;
-  --text-dim:#9A9CAB;
-  --text-faint:#5E606E;
-  --accent:#D7B56D;
-  --accent-dim:#8A7344;
+  /* Earth tone palette — warm dark brown/clay base, no blue-grey */
+  --bg:#1B1713;
+  --bg-raised:#241E18;
+  --bg-card:#2C241D;
+  --line:#3D3226;
+  --line-soft:#352B21;
+  --text:#EFE6D8;
+  --text-dim:#B5A690;
+  --text-faint:#7A6C57;
+  --accent:#C4915A;
+  --accent-dim:#8C6A41;
 
-  --grade-a:#5FA37A;
-  --grade-a-bg:#1B2620;
-  --grade-b:#C9A23D;
-  --grade-b-bg:#26210F;
-  --grade-c:#C3563F;
-  --grade-c-bg:#2A1815;
-  --grade-bb:#7C8FBF;
-  --grade-bb-bg:#1A1E2A;
+  --grade-a:#7A9A65;
+  --grade-a-bg:#222519;
+  --grade-b:#C99A4A;
+  --grade-b-bg:#2A2316;
+  --grade-c:#B5634A;
+  --grade-c-bg:#2C201A;
+  --grade-bb:#9C8254;
+  --grade-bb-bg:#28231A;
 
   --radius:14px;
   --radius-sm:9px;
@@ -237,49 +238,93 @@ button{cursor:pointer;}
 }
 .remove-x:active{background:var(--bg-card);}
 
-/* ===== Color row ===== */
+/* ===== Color row (1 สี = container ของหลาย grade entries) ===== */
 .color-row{
-  border:1px solid var(--line-soft);border-radius:10px;
-  padding:12px;margin-bottom:10px;background:var(--bg-card);
+  border:1px solid var(--line-soft);border-radius:12px;
+  padding:12px;margin-bottom:12px;background:var(--bg-card);
 }
-.color-row-top{display:flex;gap:8px;margin-bottom:10px;align-items:center;}
-.color-row-top .input{flex:1;}
+.color-row-head{
+  display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;
+}
+.color-row-head .color-tag{
+  font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+  color:var(--text-faint);text-transform:uppercase;
+}
 
-.grade-picker{display:flex;gap:6px;margin-bottom:8px;}
+/* ===== Grade entry block (1 เกรด + จำนวน + รูป + หมายเหตุ ภายใต้ 1 สี) ===== */
+.grade-entry-block{
+  border:1px solid var(--line-soft);border-radius:10px;
+  padding:11px;margin-bottom:9px;background:var(--bg-raised);
+}
+.grade-entry-block[data-grade="A"]{border-left:3px solid var(--grade-a);}
+.grade-entry-block[data-grade="B"]{border-left:3px solid var(--grade-b);}
+.grade-entry-block[data-grade="C"]{border-left:3px solid var(--grade-c);}
+.grade-entry-block[data-grade="BB"]{border-left:3px solid var(--grade-bb);}
+
+.grade-picker{display:flex;gap:6px;margin-bottom:9px;}
 .grade-opt{
   flex:1;text-align:center;padding:9px 4px;border-radius:9px;
   border:1.5px solid var(--line-soft);font-weight:700;font-size:14px;
   font-family:var(--mono);color:var(--text-faint);
-  transition:.12s;
+  transition:.12s;background:var(--bg-card);
 }
 .grade-opt[data-g="A"].active{background:var(--grade-a-bg);border-color:var(--grade-a);color:var(--grade-a);}
 .grade-opt[data-g="B"].active{background:var(--grade-b-bg);border-color:var(--grade-b);color:var(--grade-b);}
 .grade-opt[data-g="C"].active{background:var(--grade-c-bg);border-color:var(--grade-c);color:var(--grade-c);}
 .grade-opt[data-g="BB"].active{background:var(--grade-bb-bg);border-color:var(--grade-bb);color:var(--grade-bb);}
 
-.bb-round-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;background:var(--grade-bb-bg);border:1px solid var(--grade-bb);border-radius:9px;padding:9px 12px;}
+.qty-row{display:flex;align-items:center;gap:10px;margin-bottom:9px;background:var(--bg-card);border:1px solid var(--line-soft);border-radius:9px;padding:9px 12px;}
+.qty-row label{font-size:12.5px;color:var(--text-dim);font-weight:600;flex:1;}
+.qty-stepper{display:flex;align-items:center;gap:8px;}
+.qty-step-btn{width:26px;height:26px;border-radius:7px;background:var(--bg-raised);border:1px solid var(--line-soft);color:var(--text);display:flex;align-items:center;justify-content:center;font-weight:700;}
+.qty-val{font-family:var(--mono);font-weight:700;min-width:22px;text-align:center;}
+
+.bb-round-row{display:flex;align-items:center;gap:10px;margin-bottom:9px;background:var(--grade-bb-bg);border:1px solid var(--grade-bb);border-radius:9px;padding:9px 12px;}
 .bb-round-row label{font-size:12.5px;color:var(--grade-bb);font-weight:600;flex:1;}
 .bb-round-stepper{display:flex;align-items:center;gap:8px;}
 .bb-step-btn{width:26px;height:26px;border-radius:7px;background:var(--bg-card);border:1px solid var(--grade-bb);color:var(--grade-bb);display:flex;align-items:center;justify-content:center;font-weight:700;}
 .bb-round-val{font-family:var(--mono);font-weight:700;color:var(--grade-bb);min-width:18px;text-align:center;}
 
+.note-field{margin-bottom:9px;}
+.note-field label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:5px;font-weight:500;}
+.note-field textarea{
+  width:100%;background:var(--bg-card);border:1px solid var(--line-soft);
+  border-radius:9px;padding:9px 11px;color:var(--text);font-size:13.5px;
+  min-height:52px;resize:vertical;
+}
+.note-field textarea:focus{outline:none;border-color:var(--accent-dim);}
+
 .grade-history-tag{
-  display:inline-flex;align-items:center;gap:5px;
-  font-family:var(--mono);font-size:11px;color:var(--text-faint);
-  margin-bottom:8px;flex-wrap:wrap;
+  display:flex;flex-direction:column;gap:3px;
+  font-size:11px;color:var(--text-faint);
+  margin-bottom:9px;
 }
+.hist-chip-row{display:flex;gap:6px;align-items:baseline;}
 .hist-chip{
-  background:var(--bg-raised);border:1px solid var(--line-soft);
-  border-radius:6px;padding:2px 6px;
+  background:var(--bg-card);border:1px solid var(--line-soft);
+  border-radius:6px;padding:2px 6px;font-family:var(--mono);flex-shrink:0;
 }
+.hist-note{color:var(--text-faint);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+.entry-remove-row{display:flex;justify-content:flex-end;margin-top:2px;}
+.entry-remove-row button{
+  font-size:11.5px;color:var(--text-faint);background:none;border:none;
+  display:flex;align-items:center;gap:4px;
+}
+
+.add-grade-entry-btn{
+  width:100%;padding:9px;border-radius:9px;border:1.5px dashed var(--line-soft);
+  background:transparent;color:var(--text-dim);font-size:12.5px;font-weight:500;
+}
+.add-grade-entry-btn:active{border-color:var(--accent-dim);color:var(--accent);}
 
 /* ===== Image grid ===== */
 .img-grid{
-  display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:9px;
 }
 .img-thumb{
   position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;
-  background:var(--bg-raised);border:1px solid var(--line-soft);
+  background:var(--bg-card);border:1px solid var(--line-soft);
 }
 .img-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
 .img-thumb .img-del{
@@ -495,7 +540,7 @@ button{cursor:pointer;}
 </div>
 
 <!-- hidden file input -->
-<input type="file" id="file-input" accept="image/*" multiple capture="environment" style="display:none">
+<input type="file" id="file-input" accept="image/*" multiple style="display:none">
 
 <script src="app.js"></script>
 </body>
