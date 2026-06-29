@@ -547,6 +547,48 @@ function renderItemBlockHtml(item) {
   `;
 }
 
+// คำนวณสรุปยอดของแต่ละสี: A=.., B=.., C=.., BB1=.., BB2=.. (แยกรอบ BB)
+function computeColorSummary(gradeEntries) {
+  const summary = {}; // key: 'A'|'B'|'C'|'BB1'|'BB2'... -> qty
+  const order = []; // เก็บลำดับ key ตามที่เจอ
+  gradeEntries.forEach((ge) => {
+    const key = ge.grade === "BB" ? `BB${ge.bb_round || 1}` : ge.grade;
+    if (!(key in summary)) { summary[key] = 0; order.push(key); }
+    summary[key] += (ge.quantity || 0);
+  });
+  // เรียงลำดับ: A, B, C, BB1, BB2, ...
+  const gradeRank = { A: 0, B: 1, C: 2 };
+  order.sort((a, b) => {
+    const ra = a.startsWith("BB") ? 3 + parseInt(a.slice(2) || "1", 10) : gradeRank[a];
+    const rb = b.startsWith("BB") ? 3 + parseInt(b.slice(2) || "1", 10) : gradeRank[b];
+    return ra - rb;
+  });
+  return order.map((key) => ({ key, qty: summary[key], baseGrade: key.startsWith("BB") ? "BB" : key }));
+}
+
+function renderColorSummaryBarHtml(gradeEntries) {
+  const items = computeColorSummary(gradeEntries);
+  if (items.length === 0) return "";
+  const pills = items.map(({ key, qty, baseGrade }) =>
+    `<span class="summary-pill ${baseGrade}"><span class="sp-label">${key}</span>${qty}</span>`
+  ).join("");
+  return `<div class="color-summary-bar">${pills}</div>`;
+}
+
+// อัปเดตแถบสรุปยอดของสีนั้นแบบ targeted (ไม่ re-render ทั้งหมด เพื่อไม่ให้เสีย focus เวลากด stepper)
+function updateColorSummaryBar(color) {
+  const row = document.querySelector(`[data-color-id="${color.id}"]`);
+  if (!row) return;
+  const existing = row.querySelector(".color-summary-bar");
+  const html = renderColorSummaryBarHtml(color.grade_entries);
+  if (existing) {
+    if (html) existing.outerHTML = html;
+    else existing.remove();
+  } else if (html) {
+    row.querySelector(".color-row-head").insertAdjacentHTML("afterend", html);
+  }
+}
+
 function renderColorRowHtml(item, color) {
   return `
     <div class="color-row" data-color-id="${color.id}">
@@ -554,6 +596,7 @@ function renderColorRowHtml(item, color) {
         <input class="input" placeholder="ระบุสี (เช่น ดำ, ขาว, กรม)" value="${escapeHtml(color.color_name)}" data-color-name="${color.id}" style="flex:1;margin-right:8px;">
         <div class="color-remove-row"><button data-remove-color="${color.id}">✕ ลบสีนี้</button></div>
       </div>
+      ${renderColorSummaryBarHtml(color.grade_entries)}
       <div id="entries-${color.id}">
         ${color.grade_entries.map((ge) => renderGradeEntryHtml(color, ge)).join("")}
       </div>
@@ -675,19 +718,23 @@ function wireGradeEntry(color, ge, geIdx) {
   if (decBtn) decBtn.addEventListener("click", () => {
     ge.bb_round = Math.max(1, (ge.bb_round || 1) - 1);
     document.getElementById(`bb-val-${ge.id}`).textContent = ge.bb_round;
+    updateColorSummaryBar(color);
   });
   if (incBtn) incBtn.addEventListener("click", () => {
     ge.bb_round = (ge.bb_round || 1) + 1;
     document.getElementById(`bb-val-${ge.id}`).textContent = ge.bb_round;
+    updateColorSummaryBar(color);
   });
 
   block.querySelector(`[data-qty-dec="${ge.id}"]`).addEventListener("click", () => {
     ge.quantity = Math.max(1, ge.quantity - 1);
     document.getElementById(`qty-val-${ge.id}`).textContent = ge.quantity;
+    updateColorSummaryBar(color);
   });
   block.querySelector(`[data-qty-inc="${ge.id}"]`).addEventListener("click", () => {
     ge.quantity = ge.quantity + 1;
     document.getElementById(`qty-val-${ge.id}`).textContent = ge.quantity;
+    updateColorSummaryBar(color);
   });
 
   const noteEl = block.querySelector(`[data-note="${ge.id}"]`);
@@ -1146,6 +1193,7 @@ function renderAdminColorDetailHtml(sub, item, color) {
       <div class="color-row-head">
         <span style="flex:1;font-weight:600;font-size:14px;">${escapeHtml(color.color_name) || "ไม่ระบุสี"}</span>
       </div>
+      ${renderColorSummaryBarHtml(color.grade_entries)}
       ${entriesHtml}
     </div>
   `;
