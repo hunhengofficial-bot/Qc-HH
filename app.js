@@ -600,7 +600,6 @@ function renderColorRowHtml(item, color) {
       <div id="entries-${color.id}">
         ${color.grade_entries.map((ge) => renderGradeEntryHtml(color, ge)).join("")}
       </div>
-      <button class="add-grade-entry-btn" data-add-entry="${color.id}">+ เพิ่มเกรด (สีนี้)</button>
     </div>
   `;
 }
@@ -608,6 +607,7 @@ function renderColorRowHtml(item, color) {
 function renderGradeEntryHtml(color, ge) {
   const grades = ["A", "B", "C", "BB"];
   const gradeBtns = grades.map((g) => `<div class="grade-opt ${ge.grade === g ? "active" : ""}" data-g="${g}" data-entry-id="${ge.id}">${g}</div>`).join("");
+  const addGradeBtn = `<div class="grade-opt-add" data-add-entry="${color.id}" title="เพิ่มเกรดอื่นสำหรับสีนี้">+</div>`;
 
   let bbRow = "";
   if (ge.grade === "BB") {
@@ -653,7 +653,7 @@ function renderGradeEntryHtml(color, ge) {
           <span style="font-size:18px;">+</span><span>เพิ่มรูป</span>
         </div>
       </div>
-      <div class="grade-picker" data-grade-picker="${ge.id}">${gradeBtns}</div>
+      <div class="grade-picker" data-grade-picker="${ge.id}">${gradeBtns}${addGradeBtn}</div>
       <div class="qty-row">
         <label>จำนวน (ตัว)</label>
         <div class="qty-stepper">
@@ -690,9 +690,11 @@ function wireColorRow(item, color, itemIdx, colorIdx) {
     renderItemsContainer();
   });
 
-  row.querySelector(`[data-add-entry="${color.id}"]`).addEventListener("click", () => {
-    color.grade_entries.push(newGradeEntry("A"));
-    renderItemsContainer();
+  row.querySelectorAll(`[data-add-entry="${color.id}"]`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      color.grade_entries.push(newGradeEntry("A"));
+      renderItemsContainer();
+    });
   });
 
   color.grade_entries.forEach((ge, geIdx) => {
