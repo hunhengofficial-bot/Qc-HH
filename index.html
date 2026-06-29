@@ -9,26 +9,26 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{
-  /* Earth tone palette — warm dark brown/clay base, no blue-grey */
-  --bg:#1B1713;
-  --bg-raised:#241E18;
-  --bg-card:#2C241D;
-  --line:#3D3226;
-  --line-soft:#352B21;
-  --text:#EFE6D8;
-  --text-dim:#B5A690;
-  --text-faint:#7A6C57;
-  --accent:#C4915A;
-  --accent-dim:#8C6A41;
+  /* Pastel minimal palette — soft cream/white base, gentle pastel grade colors */
+  --bg:#FAF7F2;
+  --bg-raised:#FFFFFF;
+  --bg-card:#FFFFFF;
+  --line:#E8E1D6;
+  --line-soft:#EFE9DE;
+  --text:#3A3530;
+  --text-dim:#8B8378;
+  --text-faint:#B5AEA2;
+  --accent:#D8A9A0;
+  --accent-dim:#C68F84;
 
-  --grade-a:#7A9A65;
-  --grade-a-bg:#222519;
-  --grade-b:#C99A4A;
-  --grade-b-bg:#2A2316;
-  --grade-c:#B5634A;
-  --grade-c-bg:#2C201A;
-  --grade-bb:#9C8254;
-  --grade-bb-bg:#28231A;
+  --grade-a:#7FA98C;
+  --grade-a-bg:#EAF3EC;
+  --grade-b:#D4A968;
+  --grade-b-bg:#FAF1E3;
+  --grade-c:#D98B82;
+  --grade-c-bg:#FCEEEC;
+  --grade-bb:#9098C2;
+  --grade-bb-bg:#EEEFF7;
 
   --radius:14px;
   --radius-sm:9px;
@@ -115,7 +115,7 @@ button{cursor:pointer;}
 /* ===== Top bar ===== */
 .topbar{
   position:sticky;top:0;z-index:30;
-  background:rgba(21,22,26,.92);
+  background:rgba(250,247,242,.92);
   backdrop-filter:blur(10px);
   border-bottom:1px solid var(--line-soft);
   display:flex;align-items:center;justify-content:space-between;
@@ -166,7 +166,7 @@ button{cursor:pointer;}
   z-index:25;
   padding:15px;border-radius:14px;
   font-size:15px;font-weight:600;
-  box-shadow:0 8px 24px rgba(0,0,0,.4);
+  box-shadow:0 8px 20px rgba(0,0,0,.12);
 }
 
 /* ===== Cards / sections ===== */
@@ -201,7 +201,7 @@ button{cursor:pointer;}
   position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:40;
   background:var(--bg-raised);border:1px solid var(--line-soft);
   border-radius:10px;max-height:200px;overflow-y:auto;
-  display:none;box-shadow:0 8px 20px rgba(0,0,0,.4);
+  display:none;box-shadow:0 8px 20px rgba(0,0,0,.1);
 }
 .ac-list.show{display:block;}
 .ac-item{padding:10px 13px;font-size:14px;border-bottom:1px solid var(--line-soft);}
@@ -250,6 +250,20 @@ button{cursor:pointer;}
   font-family:var(--mono);font-size:11px;letter-spacing:.06em;
   color:var(--text-faint);text-transform:uppercase;
 }
+
+.color-summary-bar{
+  display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px;
+}
+.summary-pill{
+  display:inline-flex;align-items:center;gap:5px;
+  font-family:var(--mono);font-size:12px;font-weight:600;
+  padding:4px 10px;border-radius:20px;
+}
+.summary-pill.A{background:var(--grade-a-bg);color:var(--grade-a);}
+.summary-pill.B{background:var(--grade-b-bg);color:var(--grade-b);}
+.summary-pill.C{background:var(--grade-c-bg);color:var(--grade-c);}
+.summary-pill.BB{background:var(--grade-bb-bg);color:var(--grade-bb);}
+.summary-pill .sp-label{opacity:.75;font-weight:500;}
 
 /* ===== Grade entry block (1 เกรด + จำนวน + รูป + หมายเหตุ ภายใต้ 1 สี) ===== */
 .grade-entry-block{
