@@ -243,10 +243,8 @@ async function loadAllData() {
           *,
           item_colors (
             *,
-            grade_entries (
-              *,
-              item_color_images ( * )
-            )
+            item_color_images ( * ),
+            grade_entries ( * )
           )
         )
       `).order("submitted_date", { ascending: false }).order("created_at", { ascending: false }),
@@ -272,9 +270,9 @@ function normalizeSubmission(sub) {
   sub.submission_items.forEach((item) => {
     item.item_colors = (item.item_colors || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
     item.item_colors.forEach((c) => {
+      c.item_color_images = (c.item_color_images || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       c.grade_entries = (c.grade_entries || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       c.grade_entries.forEach((ge) => {
-        ge.item_color_images = (ge.item_color_images || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
         if (!Array.isArray(ge.note_history)) ge.note_history = [];
       });
     });
@@ -329,13 +327,13 @@ function newGradeEntry(grade) {
     bb_round: null,
     note: "",
     note_history: [],
-    images: [], // [{id, public_url, storage_path, uploading}]
   };
 }
 function newColorRow() {
   return {
     id: uid(),
     color_name: "",
+    images: [], // [{id, public_url, storage_path, uploading}] — รูปชุดเดียวใช้ร่วมกันทุกเกรดในสีนี้
     grade_entries: [newGradeEntry("A")],
   };
 }
@@ -514,7 +512,7 @@ function renderItemsContainer() {
 
   d.items.forEach((item, itemIdx) => {
     root.querySelector(`[data-remove-item="${item.id}"]`).addEventListener("click", () => {
-      const hasData = item.colors.some(c => c.grade_entries.some(ge => ge.images.length > 0 || ge.note || ge.quantity !== 1));
+      const hasData = item.colors.some(c => c.images.length > 0 || c.grade_entries.some(ge => ge.note || ge.quantity !== 1));
       if (hasData && !confirm(`ลบรุ่น "${item.style_name}" ทั้งหมด?`)) return;
       d.items.splice(itemIdx, 1);
       renderItemsContainer();
@@ -596,12 +594,27 @@ function renderColorRowHtml(item, color) {
         <input class="input" placeholder="ระบุสี (เช่น ดำ, ขาว, กรม)" value="${escapeHtml(color.color_name)}" data-color-name="${color.id}" style="flex:1;margin-right:8px;">
         <div class="color-remove-row"><button data-remove-color="${color.id}">✕ ลบสีนี้</button></div>
       </div>
+      <div class="img-grid" data-img-grid="${color.id}">
+        ${renderImageThumbsHtml(color)}
+        <div class="img-add" data-add-img="${color.id}">
+          <span style="font-size:18px;">+</span><span>เพิ่มรูป</span>
+        </div>
+      </div>
       ${renderColorSummaryBarHtml(color.grade_entries)}
       <div id="entries-${color.id}">
         ${color.grade_entries.map((ge) => renderGradeEntryHtml(color, ge)).join("")}
       </div>
     </div>
   `;
+}
+
+function renderImageThumbsHtml(color) {
+  return color.images.map((img) => `
+    <div class="img-thumb ${img.uploading ? "uploading" : ""}" data-img-id="${img.id}">
+      ${img.uploading ? '<div class="spinner"></div>' : `<img src="${img.public_url}" data-lightbox="${img.public_url}">`}
+      ${!img.uploading ? `<div class="img-del" data-del-img="${color.id}|${img.id}">✕</div>` : ""}
+    </div>
+  `).join("");
 }
 
 function renderGradeEntryHtml(color, ge) {
@@ -622,15 +635,6 @@ function renderGradeEntryHtml(color, ge) {
       </div>`;
   }
 
-  let histHtml = "";
-  if (ge.note_history.length > 0) {
-    const rows = ge.note_history.map((h) => {
-      const label = h.grade === "BB" ? `BB${h.bb_round || ""}` : h.grade;
-      return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note || "")}</span></div>`;
-    }).join("");
-    histHtml = `<div class="grade-history-tag">${rows}</div>`;
-  }
-
   const needsNote = GRADE_NEEDS_NOTE[ge.grade];
   const noteField = needsNote ? `
     <div class="note-field">
@@ -638,21 +642,8 @@ function renderGradeEntryHtml(color, ge) {
       <textarea data-note="${ge.id}" placeholder="เช่น เย็บไม่ตรงตะเข็บ, ขอบไม่เรียบ...">${escapeHtml(ge.note)}</textarea>
     </div>` : "";
 
-  const imgGrid = ge.images.map((img) => `
-    <div class="img-thumb ${img.uploading ? "uploading" : ""}" data-img-id="${img.id}">
-      ${img.uploading ? '<div class="spinner"></div>' : `<img src="${img.public_url}" data-lightbox="${img.public_url}">`}
-      ${!img.uploading ? `<div class="img-del" data-del-img="${ge.id}|${img.id}">✕</div>` : ""}
-    </div>
-  `).join("");
-
   return `
     <div class="grade-entry-block" data-entry-id="${ge.id}" data-grade="${ge.grade}">
-      <div class="img-grid" data-img-grid="${ge.id}">
-        ${imgGrid}
-        <div class="img-add" data-add-img="${ge.id}">
-          <span style="font-size:18px;">+</span><span>เพิ่มรูป</span>
-        </div>
-      </div>
       <div class="grade-picker" data-grade-picker="${ge.id}">${gradeBtns}${addGradeBtn}</div>
       <div class="qty-row">
         <label>จำนวน (ตัว)</label>
@@ -664,7 +655,6 @@ function renderGradeEntryHtml(color, ge) {
       </div>
       ${bbRow}
       ${noteField}
-      ${histHtml}
       <div class="entry-remove-row">
         <button data-remove-entry="${ge.id}">✕ ลบเกรดนี้</button>
       </div>
@@ -683,11 +673,26 @@ function wireColorRow(item, color, itemIdx, colorIdx) {
   });
 
   row.querySelector(`[data-remove-color="${color.id}"]`).addEventListener("click", () => {
-    const hasData = color.grade_entries.some(ge => ge.images.length > 0 || ge.note);
+    const hasData = color.images.length > 0 || color.grade_entries.some(ge => ge.note);
     if (hasData && !confirm("ลบสีนี้ทั้งหมด?")) return;
     item.colors.splice(colorIdx, 1);
     if (item.colors.length === 0) item.colors.push(newColorRow());
     renderItemsContainer();
+  });
+
+  row.querySelector(`[data-add-img="${color.id}"]`).addEventListener("click", () => {
+    openFilePicker(color);
+  });
+
+  row.querySelectorAll(`[data-del-img]`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const [colorId, imgId] = btn.dataset.delImg.split("|");
+      removeDraftImage(color, imgId);
+    });
+  });
+
+  row.querySelectorAll(`[data-lightbox]`).forEach((img) => {
+    img.addEventListener("click", () => openLightbox(img.dataset.lightbox));
   });
 
   row.querySelectorAll(`[data-add-entry="${color.id}"]`).forEach((btn) => {
@@ -742,23 +747,8 @@ function wireGradeEntry(color, ge, geIdx) {
   const noteEl = block.querySelector(`[data-note="${ge.id}"]`);
   if (noteEl) noteEl.addEventListener("input", (e) => { ge.note = e.target.value; });
 
-  block.querySelector(`[data-add-img="${ge.id}"]`).addEventListener("click", () => {
-    openFilePicker(ge);
-  });
-
-  block.querySelectorAll(`[data-del-img]`).forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const [entryId, imgId] = btn.dataset.delImg.split("|");
-      removeDraftImage(ge, imgId);
-    });
-  });
-
-  block.querySelectorAll(`[data-lightbox]`).forEach((img) => {
-    img.addEventListener("click", () => openLightbox(img.dataset.lightbox));
-  });
-
   block.querySelector(`[data-remove-entry="${ge.id}"]`).addEventListener("click", () => {
-    if ((ge.images.length > 0 || ge.note) && !confirm("ลบรายการเกรดนี้?")) return;
+    if (ge.note && !confirm("ลบรายการเกรดนี้?")) return;
     color.grade_entries.splice(geIdx, 1);
     if (color.grade_entries.length === 0) color.grade_entries.push(newGradeEntry("A"));
     renderItemsContainer();
@@ -797,12 +787,12 @@ function applyGradeChange(ge, newGrade) {
 
 
 // ============================================================
-// IMAGE UPLOAD (Supabase Storage) — ผูกกับ grade entry
+// IMAGE UPLOAD (Supabase Storage) — ผูกกับ "สี" ใช้ร่วมกันทุกเกรดในสีนั้น
 // ============================================================
-let pendingUploadEntry = null;
+let pendingUploadColor = null;
 
-function openFilePicker(ge) {
-  pendingUploadEntry = ge;
+function openFilePicker(color) {
+  pendingUploadColor = color;
   const input = document.getElementById("file-input");
   input.value = "";
   input.onchange = null; // ใช้ default handler ด้านล่าง
@@ -812,19 +802,19 @@ function openFilePicker(ge) {
 document.getElementById("file-input").addEventListener("change", async (e) => {
   if (typeof e.target.onchange === "function") return; // ถ้ามี custom handler (admin edit sheet) ให้มันจัดการเอง
   const files = Array.from(e.target.files || []);
-  if (files.length === 0 || !pendingUploadEntry) return;
-  const ge = pendingUploadEntry;
+  if (files.length === 0 || !pendingUploadColor) return;
+  const color = pendingUploadColor;
 
   for (const file of files) {
     const localId = uid();
     const placeholderUrl = URL.createObjectURL(file);
-    ge.images.push({ id: localId, public_url: placeholderUrl, storage_path: null, uploading: true });
+    color.images.push({ id: localId, public_url: placeholderUrl, storage_path: null, uploading: true });
   }
   renderItemsContainer();
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const imgEntry = ge.images[ge.images.length - files.length + i];
+    const imgEntry = color.images[color.images.length - files.length + i];
     try {
       const compressed = await compressImage(file, 1600, 0.78);
       const ext = "jpg";
@@ -839,12 +829,12 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
       imgEntry.storage_path = path;
       imgEntry.uploading = false;
 
-      if (ge._dbId) {
+      if (color._dbId) {
         await sb.from("item_color_images").insert({
-          grade_entry_id: ge._dbId,
+          item_color_id: color._dbId,
           storage_path: path,
           public_url: pub.publicUrl,
-          sort_order: ge.images.length,
+          sort_order: color.images.length,
         });
       }
     } catch (err) {
@@ -880,12 +870,12 @@ function compressImage(file, maxDim, quality) {
   });
 }
 
-async function removeDraftImage(ge, imgId) {
-  const idx = ge.images.findIndex((im) => im.id === imgId);
+async function removeDraftImage(color, imgId) {
+  const idx = color.images.findIndex((im) => im.id === imgId);
   if (idx === -1) return;
-  const img = ge.images[idx];
+  const img = color.images[idx];
   if (!confirm("ลบรูปนี้?")) return;
-  ge.images.splice(idx, 1);
+  color.images.splice(idx, 1);
   renderItemsContainer();
   if (img.storage_path) {
     try {
@@ -930,7 +920,7 @@ async function submitDraft() {
     }
   }
 
-  const stillUploading = d.items.some((it) => it.colors.some((c) => c.grade_entries.some((ge) => ge.images.some((im) => im.uploading))));
+  const stillUploading = d.items.some((it) => it.colors.some((c) => c.images.some((im) => im.uploading)));
   if (stillUploading) { toast("รอรูปอัปโหลดให้เสร็จก่อน"); return; }
 
   const fab = document.getElementById("tailor-fab");
@@ -963,7 +953,7 @@ async function submitDraft() {
 
       for (let j = 0; j < item.colors.length; j++) {
         const color = item.colors[j];
-        const hasAnyData = color.grade_entries.some((ge) => ge.images.length > 0 || ge.note.trim() || ge.quantity !== 1) || color.color_name.trim();
+        const hasAnyData = color.images.length > 0 || color.grade_entries.some((ge) => ge.note.trim() || ge.quantity !== 1) || color.color_name.trim();
         if (!hasAnyData) continue;
 
         const { data: colorRow, error: colorErr } = await sb.from("item_colors").insert({
@@ -973,9 +963,20 @@ async function submitDraft() {
         }).select().single();
         if (colorErr) throw colorErr;
 
+        const validImages = color.images.filter((im) => im.storage_path && !im._failed);
+        if (validImages.length) {
+          const rows = validImages.map((im, idx2) => ({
+            item_color_id: colorRow.id,
+            storage_path: im.storage_path,
+            public_url: im.public_url,
+            sort_order: idx2,
+          }));
+          await sb.from("item_color_images").insert(rows);
+        }
+
         for (let k = 0; k < color.grade_entries.length; k++) {
           const ge = color.grade_entries[k];
-          const { data: entryRow, error: entryErr } = await sb.from("grade_entries").insert({
+          const { error: entryErr } = await sb.from("grade_entries").insert({
             item_color_id: colorRow.id,
             grade: ge.grade,
             quantity: ge.quantity,
@@ -983,19 +984,8 @@ async function submitDraft() {
             note: ge.note.trim() || null,
             note_history: ge.note_history,
             sort_order: k,
-          }).select().single();
+          });
           if (entryErr) throw entryErr;
-
-          const validImages = ge.images.filter((im) => im.storage_path && !im._failed);
-          if (validImages.length) {
-            const rows = validImages.map((im, idx2) => ({
-              grade_entry_id: entryRow.id,
-              storage_path: im.storage_path,
-              public_url: im.public_url,
-              sort_order: idx2,
-            }));
-            await sb.from("item_color_images").insert(rows);
-          }
         }
       }
     }
@@ -1160,22 +1150,23 @@ function renderAdminSubDetailHtml(sub) {
 }
 
 function renderAdminColorDetailHtml(sub, item, color) {
+  const colorImgs = color.item_color_images.map((img) => `
+    <div class="img-thumb"><img src="${img.public_url}" data-lightbox="${img.public_url}"></div>
+  `).join("");
+
   const entriesHtml = color.grade_entries.map((ge) => {
     const gradeLabel = ge.grade === "BB" ? `BB${ge.bb_round || ""}` : ge.grade;
-    const imgs = ge.item_color_images.map((img) => `
-      <div class="img-thumb"><img src="${img.public_url}" data-lightbox="${img.public_url}"></div>
-    `).join("");
     let histHtml = "";
-    if (ge.note_history && ge.note_history.length) {
-      const rows = ge.note_history.map((h) => {
+    const meaningfulHistory = (ge.note_history || []).filter((h) => h.note && h.note.trim());
+    if (meaningfulHistory.length) {
+      const rows = meaningfulHistory.map((h) => {
         const label = h.grade === "BB" ? `BB${h.bb_round || ""}` : h.grade;
-        return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note || "")}</span></div>`;
+        return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note)}</span></div>`;
       }).join("");
       histHtml = `<div class="grade-history-tag">${rows}</div>`;
     }
     return `
       <div class="grade-entry-block" data-grade="${ge.grade}" style="background:var(--bg-card);">
-        <div class="img-grid" style="margin-bottom:8px;">${imgs || '<span style="font-size:12px;color:var(--text-faint);">ไม่มีรูป</span>'}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <span class="grade-pill ${ge.grade}">${gradeLabel}</span>
           <span style="font-family:var(--mono);font-size:13px;color:var(--text-dim);">${ge.quantity} ตัว</span>
@@ -1194,7 +1185,9 @@ function renderAdminColorDetailHtml(sub, item, color) {
     <div class="color-row" style="background:transparent;border-style:dashed;">
       <div class="color-row-head">
         <span style="flex:1;font-weight:600;font-size:14px;">${escapeHtml(color.color_name) || "ไม่ระบุสี"}</span>
+        <button class="btn btn-sm btn-ghost" data-manage-photos="${sub.id}|${item.id}|${color.id}">จัดการรูป</button>
       </div>
+      <div class="img-grid" style="margin-bottom:10px;">${colorImgs || '<span style="font-size:12px;color:var(--text-faint);">ไม่มีรูป</span>'}</div>
       ${renderColorSummaryBarHtml(color.grade_entries)}
       ${entriesHtml}
     </div>
@@ -1213,7 +1206,7 @@ function wireAdminSubDetail(sub) {
   });
   document.querySelectorAll(`[data-delete-entry]`).forEach((btn) => {
     btn.addEventListener("click", async () => {
-      if (!confirm("ลบรายการเกรดนี้และรูปทั้งหมด?")) return;
+      if (!confirm("ลบรายการเกรดนี้?")) return;
       await deleteGradeEntry(btn.dataset.deleteEntry);
     });
   });
@@ -1223,6 +1216,12 @@ function wireAdminSubDetail(sub) {
       openEditEntrySheet(subId, itemId, colorId, entryId);
     });
   });
+  document.querySelectorAll(`[data-manage-photos]`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const [subId, itemId, colorId] = btn.dataset.managePhotos.split("|");
+      openManagePhotosSheet(subId, itemId, colorId);
+    });
+  });
 }
 
 async function deleteSubmission(subId) {
@@ -1230,7 +1229,7 @@ async function deleteSubmission(subId) {
   try {
     const sub = state.submissions.find((s) => s.id === subId);
     const paths = [];
-    sub.submission_items.forEach((it) => it.item_colors.forEach((c) => c.grade_entries.forEach((ge) => ge.item_color_images.forEach((im) => paths.push(im.storage_path)))));
+    sub.submission_items.forEach((it) => it.item_colors.forEach((c) => c.item_color_images.forEach((im) => paths.push(im.storage_path))));
     if (paths.length) await sb.storage.from(STORAGE_BUCKET).remove(paths);
     await sb.from("submissions").delete().eq("id", subId);
     toast("ลบใบงานแล้ว", "ok");
@@ -1245,11 +1244,6 @@ async function deleteSubmission(subId) {
 async function deleteGradeEntry(entryId) {
   setSyncDot("busy");
   try {
-    let paths = [];
-    state.submissions.forEach((s) => s.submission_items.forEach((it) => it.item_colors.forEach((c) => c.grade_entries.forEach((ge) => {
-      if (ge.id === entryId) paths = ge.item_color_images.map((im) => im.storage_path);
-    }))));
-    if (paths.length) await sb.storage.from(STORAGE_BUCKET).remove(paths);
     await sb.from("grade_entries").delete().eq("id", entryId);
     toast("ลบแล้ว", "ok");
     await loadAllData();
@@ -1258,6 +1252,67 @@ async function deleteGradeEntry(entryId) {
     console.error(e);
     toast("ลบไม่สำเร็จ: " + (e.message || e), "err");
   } finally { setSyncDot("live"); }
+}
+
+// ---------- Manage photos sheet (admin) — รูปอยู่ระดับสี ใช้ร่วมกันทุกเกรด ----------
+function openManagePhotosSheet(subId, itemId, colorId) {
+  const sub = state.submissions.find((s) => s.id === subId);
+  const item = sub.submission_items.find((i) => i.id === itemId);
+  const color = item.item_colors.find((c) => c.id === colorId);
+
+  const imgs = color.item_color_images.map((img) => `
+    <div class="img-thumb" data-img-row="${img.id}">
+      <img src="${img.public_url}">
+      <div class="img-del" data-edel="${img.id}">✕</div>
+    </div>
+  `).join("");
+
+  const sheetHtml = `
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">จัดการรูป — ${escapeHtml(item.style_name)}</div>
+    <div class="sheet-sub">${escapeHtml(sub.tailor_name)} · สี: ${escapeHtml(color.color_name) || "ไม่ระบุ"}</div>
+    <div class="img-grid" id="manage-img-grid">
+      ${imgs}
+      <div class="img-add" id="manage-add-img"><span style="font-size:18px;">+</span><span>เพิ่มรูป</span></div>
+    </div>
+  `;
+  showSheet(sheetHtml);
+
+  document.querySelectorAll("#manage-img-grid [data-edel]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const imgId = btn.dataset.edel;
+      if (!confirm("ลบรูปนี้?")) return;
+      const imgRow = color.item_color_images.find((i) => i.id === imgId);
+      await sb.storage.from(STORAGE_BUCKET).remove([imgRow.storage_path]);
+      await sb.from("item_color_images").delete().eq("id", imgId);
+      toast("ลบรูปแล้ว", "ok");
+      btn.closest(".img-thumb").remove();
+      await loadAllData();
+    });
+  });
+
+  document.getElementById("manage-add-img").addEventListener("click", () => {
+    const input = document.getElementById("file-input");
+    input.value = "";
+    input.onchange = async (e) => {
+      const files = Array.from(e.target.files || []);
+      for (const file of files) {
+        try {
+          const compressed = await compressImage(file, 1600, 0.78);
+          const path = `${todayISO()}/${uid()}.jpg`;
+          await sb.storage.from(STORAGE_BUCKET).upload(path, compressed, { contentType: "image/jpeg" });
+          const { data: pub } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+          await sb.from("item_color_images").insert({ item_color_id: color.id, storage_path: path, public_url: pub.publicUrl, sort_order: color.item_color_images.length });
+        } catch (err) { console.error(err); toast("อัปโหลดไม่สำเร็จ", "err"); }
+      }
+      toast("เพิ่มรูปแล้ว", "ok");
+      input.onchange = null;
+      await loadAllData();
+      closeSheet();
+      renderAdminScreen();
+    };
+    input.click();
+  });
 }
 
 // ---------- Edit grade entry sheet (admin) ----------
@@ -1269,25 +1324,11 @@ function openEditEntrySheet(subId, itemId, colorId, entryId) {
 
   const grades = ["A", "B", "C", "BB"];
   const gradeBtns = grades.map((g) => `<div class="grade-opt ${ge.grade === g ? "active" : ""}" data-eg="${g}">${g}</div>`).join("");
-  const imgs = ge.item_color_images.map((img) => `
-    <div class="img-thumb" data-img-row="${img.id}">
-      <img src="${img.public_url}">
-      <div class="img-del" data-edel="${img.id}">✕</div>
-    </div>
-  `).join("");
 
   const sheetHtml = `
     <div class="sheet-handle"></div>
     <div class="sheet-title">แก้ไข — ${escapeHtml(item.style_name)}</div>
     <div class="sheet-sub">${escapeHtml(sub.tailor_name)} · ${fmtDateThai(sub.submitted_date)} · สี: ${escapeHtml(color.color_name) || "ไม่ระบุ"}</div>
-
-    <div class="field">
-      <label>รูปภาพ</label>
-      <div class="img-grid" id="edit-img-grid">
-        ${imgs}
-        <div class="img-add" id="edit-add-img"><span style="font-size:18px;">+</span><span>เพิ่มรูป</span></div>
-      </div>
-    </div>
 
     <div class="field">
       <label>เกรด</label>
@@ -1352,10 +1393,11 @@ function openEditEntrySheet(subId, itemId, colorId, entryId) {
   }
   function renderHistWrap() {
     const wrap = document.getElementById("edit-hist-wrap");
-    if (ge.note_history && ge.note_history.length) {
-      const rows = ge.note_history.map((h) => {
+    const meaningfulHistory = (ge.note_history || []).filter((h) => h.note && h.note.trim());
+    if (meaningfulHistory.length) {
+      const rows = meaningfulHistory.map((h) => {
         const label = h.grade === "BB" ? `BB${h.bb_round||""}` : h.grade;
-        return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note || "")}</span></div>`;
+        return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note)}</span></div>`;
       }).join("");
       wrap.innerHTML = `<div class="grade-history-tag" style="margin-bottom:14px;">${rows}</div>`;
     } else {
@@ -1390,41 +1432,6 @@ function openEditEntrySheet(subId, itemId, colorId, entryId) {
     document.getElementById("edit-qty-val").textContent = editQty;
   });
 
-  document.querySelectorAll("#edit-img-grid [data-edel]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const imgId = btn.dataset.edel;
-      if (!confirm("ลบรูปนี้?")) return;
-      const imgRow = ge.item_color_images.find((i) => i.id === imgId);
-      await sb.storage.from(STORAGE_BUCKET).remove([imgRow.storage_path]);
-      await sb.from("item_color_images").delete().eq("id", imgId);
-      toast("ลบรูปแล้ว", "ok");
-      btn.closest(".img-thumb").remove();
-      await loadAllData();
-    });
-  });
-
-  document.getElementById("edit-add-img").addEventListener("click", () => {
-    const input = document.getElementById("file-input");
-    input.value = "";
-    input.onchange = async (e) => {
-      const files = Array.from(e.target.files || []);
-      for (const file of files) {
-        try {
-          const compressed = await compressImage(file, 1600, 0.78);
-          const path = `${todayISO()}/${uid()}.jpg`;
-          await sb.storage.from(STORAGE_BUCKET).upload(path, compressed, { contentType: "image/jpeg" });
-          const { data: pub } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-          await sb.from("item_color_images").insert({ grade_entry_id: ge.id, storage_path: path, public_url: pub.publicUrl, sort_order: ge.item_color_images.length });
-        } catch (err) { console.error(err); toast("อัปโหลดไม่สำเร็จ", "err"); }
-      }
-      toast("เพิ่มรูปแล้ว", "ok");
-      input.onchange = null;
-      await loadAllData();
-      closeSheet();
-    };
-    input.click();
-  });
-
   document.getElementById("edit-save-btn").addEventListener("click", async () => {
     if (GRADE_NEEDS_NOTE[editGrade] && !editNote.trim()) {
       toast("กรอกหมายเหตุก่อนบันทึก", "err");
@@ -1432,7 +1439,6 @@ function openEditEntrySheet(subId, itemId, colorId, entryId) {
     }
     const history = ge.note_history.slice();
     const gradeChanged = editGrade !== ge.grade;
-    const noteChanged = editNote !== (ge.note || "");
     const bbRoundChanged = editGrade === "BB" && editBbRound !== ge.bb_round;
     if (gradeChanged || (editGrade === "BB" && bbRoundChanged)) {
       history.push({
@@ -1602,15 +1608,15 @@ function renderAdminReport(body) {
       html += `<div class="report-day-group"><div class="report-day-title">${escapeHtml(sub.tailor_name)}</div>`;
       sub.submission_items.forEach((item) => {
         item.item_colors.forEach((color) => {
+          const thumb = color.item_color_images[0]?.public_url || "";
           color.grade_entries.forEach((ge) => {
-            const thumb = ge.item_color_images[0]?.public_url || "";
             const gradeLabel = ge.grade === "BB" ? `BB${ge.bb_round||""}` : ge.grade;
             html += `
               <div class="report-row">
                 ${thumb ? `<img class="report-thumb" src="${thumb}" data-lightbox="${thumb}">` : `<div class="report-thumb"></div>`}
                 <div class="report-info">
                   <div class="report-style">${escapeHtml(item.style_name)}</div>
-                  <div class="report-color">${escapeHtml(color.color_name) || "ไม่ระบุสี"} · ${ge.quantity} ตัว · ${ge.item_color_images.length} รูป</div>
+                  <div class="report-color">${escapeHtml(color.color_name) || "ไม่ระบุสี"} · ${ge.quantity} ตัว · ${color.item_color_images.length} รูป</div>
                 </div>
                 <span class="grade-pill ${ge.grade}">${gradeLabel}</span>
               </div>`;
