@@ -17,6 +17,7 @@ const GRADE_LABELS = {
   BB: "เกรด BB — แก้กลับมาแล้ว",
 };
 const GRADE_SHORT = { A: "A", B: "B", C: "C", BB: "BB" };
+const GRADE_NEEDS_NOTE = { A: false, B: false, C: true, BB: true };
 
 // ---------- Supabase client ----------
 let sb = null;
@@ -225,6 +226,7 @@ const styleTag = document.createElement("style");
 styleTag.textContent = `@keyframes shake{10%,90%{transform:translateX(-2px)}20%,80%{transform:translateX(4px)}30%,50%,70%{transform:translateX(-7px)}40%,60%{transform:translateX(7px)}}`;
 document.head.appendChild(styleTag);
 
+
 // ============================================================
 // DATA LAYER — load + realtime subscribe
 // ============================================================
@@ -241,7 +243,10 @@ async function loadAllData() {
           *,
           item_colors (
             *,
-            item_color_images ( * )
+            grade_entries (
+              *,
+              item_color_images ( * )
+            )
           )
         )
       `).order("submitted_date", { ascending: false }).order("created_at", { ascending: false }),
@@ -267,8 +272,11 @@ function normalizeSubmission(sub) {
   sub.submission_items.forEach((item) => {
     item.item_colors = (item.item_colors || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
     item.item_colors.forEach((c) => {
-      c.item_color_images = (c.item_color_images || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-      if (!Array.isArray(c.grade_history)) c.grade_history = [];
+      c.grade_entries = (c.grade_entries || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      c.grade_entries.forEach((ge) => {
+        ge.item_color_images = (ge.item_color_images || []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+        if (!Array.isArray(ge.note_history)) ge.note_history = [];
+      });
     });
   });
   return sub;
@@ -278,7 +286,7 @@ let realtimeChannel = null;
 function subscribeRealtime() {
   if (realtimeChannel) return;
   realtimeChannel = sb.channel("sewing-grade-changes");
-  ["submissions", "submission_items", "item_colors", "item_color_images", "tailors", "styles"].forEach((table) => {
+  ["submissions", "submission_items", "item_colors", "grade_entries", "item_color_images", "tailors", "styles"].forEach((table) => {
     realtimeChannel.on("postgres_changes", { event: "*", schema: "public", table }, () => {
       debounceReload();
     });
@@ -300,29 +308,35 @@ function debounceReload() {
 
 
 // ============================================================
-// TAILOR VIEW — draft submission, items, colors, images
+// TAILOR VIEW — draft submission, items, colors, grade entries
 // ============================================================
 
 function initTailorDraft() {
   if (state.draft) return;
   state.draft = {
-    id: null, // null until saved as a real submission row first time
     tailor_name: "",
     submitted_date: todayISO(),
     note: "",
-    items: [], // [{id, style_name, colors:[{id,color_name,current_grade,bb_round,grade_history,images:[{id,public_url,storage_path,uploading}]}]}]
+    items: [], // [{id, style_name, colors:[{id,color_name,grade_entries:[...]}]}]
   };
 }
 
+function newGradeEntry(grade) {
+  return {
+    id: uid(),
+    grade: grade || "A",
+    quantity: 1,
+    bb_round: null,
+    note: "",
+    note_history: [],
+    images: [], // [{id, public_url, storage_path, uploading}]
+  };
+}
 function newColorRow() {
   return {
     id: uid(),
     color_name: "",
-    current_grade: "",
-    bb_round: null,
-    grade_history: [],
-    images: [],
-    _isNew: true,
+    grade_entries: [newGradeEntry("A")],
   };
 }
 function newItemBlock(styleName) {
@@ -330,7 +344,6 @@ function newItemBlock(styleName) {
     id: uid(),
     style_name: styleName || "",
     colors: [newColorRow()],
-    _isNew: true,
   };
 }
 
@@ -382,13 +395,16 @@ function renderTailorScreen(preserveScroll) {
       d.tailor_name = val;
       document.getElementById("f-tailor-name").value = val;
       hideAutocomplete("ac-tailor");
+      updateFab();
     });
+    updateFab();
   });
   document.getElementById("f-tailor-name").addEventListener("focus", (e) => {
     showAutocomplete("ac-tailor", e.target.value, state.tailors.map((t) => t.name), (val) => {
       d.tailor_name = val;
       document.getElementById("f-tailor-name").value = val;
       hideAutocomplete("ac-tailor");
+      updateFab();
     });
   });
   document.getElementById("f-date").addEventListener("change", (e) => {
@@ -418,7 +434,6 @@ function renderTailorScreen(preserveScroll) {
 
   document.addEventListener("click", globalAcDismiss, { once: true });
 
-  // floating submit bar
   let fab = document.getElementById("tailor-fab");
   if (!fab) {
     fab = document.createElement("button");
@@ -427,9 +442,7 @@ function renderTailorScreen(preserveScroll) {
     document.getElementById("tailor-screen").appendChild(fab);
     fab.addEventListener("click", submitDraft);
   }
-  const itemCount = d.items.length;
-  fab.textContent = itemCount > 0 ? `ส่งงาน (${itemCount} รุ่น)` : "ส่งงาน";
-  fab.style.display = itemCount > 0 && d.tailor_name.trim() ? "block" : "none";
+  updateFab();
 
   if (preserveScroll) window.scrollTo(0, scrollY);
 }
@@ -497,14 +510,12 @@ function renderItemsContainer() {
     root.innerHTML = "";
     return;
   }
-  root.innerHTML = d.items.map((item, itemIdx) => renderItemBlockHtml(item, itemIdx)).join("");
+  root.innerHTML = d.items.map((item) => renderItemBlockHtml(item)).join("");
 
   d.items.forEach((item, itemIdx) => {
-    // remove item
     root.querySelector(`[data-remove-item="${item.id}"]`).addEventListener("click", () => {
-      if (item.colors.some(c => c.images.length > 0 || c.current_grade)) {
-        if (!confirm(`ลบรุ่น "${item.style_name}" ทั้งหมด?`)) return;
-      }
+      const hasData = item.colors.some(c => c.grade_entries.some(ge => ge.images.length > 0 || ge.note || ge.quantity !== 1));
+      if (hasData && !confirm(`ลบรุ่น "${item.style_name}" ทั้งหมด?`)) return;
       d.items.splice(itemIdx, 1);
       renderItemsContainer();
       updateFab();
@@ -521,7 +532,7 @@ function renderItemsContainer() {
   });
 }
 
-function renderItemBlockHtml(item, itemIdx) {
+function renderItemBlockHtml(item) {
   return `
     <div class="item-block" data-item-id="${item.id}">
       <div class="item-block-head">
@@ -529,66 +540,95 @@ function renderItemBlockHtml(item, itemIdx) {
         <button class="remove-x" data-remove-item="${item.id}">✕</button>
       </div>
       <div id="colors-${item.id}">
-        ${item.colors.map((c, ci) => renderColorRowHtml(item, c, ci)).join("")}
+        ${item.colors.map((c) => renderColorRowHtml(item, c)).join("")}
       </div>
       <button class="add-color-btn" data-add-color="${item.id}">+ เพิ่มสี</button>
     </div>
   `;
 }
 
-function renderColorRowHtml(item, color, colorIdx) {
+function renderColorRowHtml(item, color) {
+  return `
+    <div class="color-row" data-color-id="${color.id}">
+      <div class="color-row-head">
+        <input class="input" placeholder="ระบุสี (เช่น ดำ, ขาว, กรม)" value="${escapeHtml(color.color_name)}" data-color-name="${color.id}" style="flex:1;margin-right:8px;">
+        <div class="color-remove-row"><button data-remove-color="${color.id}">✕ ลบสีนี้</button></div>
+      </div>
+      <div id="entries-${color.id}">
+        ${color.grade_entries.map((ge) => renderGradeEntryHtml(color, ge)).join("")}
+      </div>
+      <button class="add-grade-entry-btn" data-add-entry="${color.id}">+ เพิ่มเกรด (สีนี้)</button>
+    </div>
+  `;
+}
+
+function renderGradeEntryHtml(color, ge) {
   const grades = ["A", "B", "C", "BB"];
-  const gradeBtns = grades.map((g) => `<div class="grade-opt ${color.current_grade === g ? "active" : ""}" data-g="${g}" data-color-id="${color.id}">${g}</div>`).join("");
+  const gradeBtns = grades.map((g) => `<div class="grade-opt ${ge.grade === g ? "active" : ""}" data-g="${g}" data-entry-id="${ge.id}">${g}</div>`).join("");
 
   let bbRow = "";
-  if (color.current_grade === "BB") {
+  if (ge.grade === "BB") {
     bbRow = `
-      <div class="bb-round-row" data-bb-row="${color.id}">
+      <div class="bb-round-row" data-bb-row="${ge.id}">
         <label>แก้ครั้งที่</label>
         <div class="bb-round-stepper">
-          <button class="bb-step-btn" data-bb-dec="${color.id}">−</button>
-          <span class="bb-round-val" id="bb-val-${color.id}">${color.bb_round || 1}</span>
-          <button class="bb-step-btn" data-bb-inc="${color.id}">+</button>
+          <button class="bb-step-btn" data-bb-dec="${ge.id}">−</button>
+          <span class="bb-round-val" id="bb-val-${ge.id}">${ge.bb_round || 1}</span>
+          <button class="bb-step-btn" data-bb-inc="${ge.id}">+</button>
         </div>
       </div>`;
   }
 
   let histHtml = "";
-  if (color.grade_history.length > 0) {
-    const chips = color.grade_history.map((h) => {
+  if (ge.note_history.length > 0) {
+    const rows = ge.note_history.map((h) => {
       const label = h.grade === "BB" ? `BB${h.bb_round || ""}` : h.grade;
-      return `<span class="hist-chip">${label}</span>`;
-    }).join("→");
-    histHtml = `<div class="grade-history-tag">ประวัติ: ${chips}</div>`;
+      return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note || "")}</span></div>`;
+    }).join("");
+    histHtml = `<div class="grade-history-tag">${rows}</div>`;
   }
 
-  const imgGrid = color.images.map((img) => `
+  const needsNote = GRADE_NEEDS_NOTE[ge.grade];
+  const noteField = needsNote ? `
+    <div class="note-field">
+      <label>หมายเหตุ / สาเหตุที่ได้เกรดนี้</label>
+      <textarea data-note="${ge.id}" placeholder="เช่น เย็บไม่ตรงตะเข็บ, ขอบไม่เรียบ...">${escapeHtml(ge.note)}</textarea>
+    </div>` : "";
+
+  const imgGrid = ge.images.map((img) => `
     <div class="img-thumb ${img.uploading ? "uploading" : ""}" data-img-id="${img.id}">
       ${img.uploading ? '<div class="spinner"></div>' : `<img src="${img.public_url}" data-lightbox="${img.public_url}">`}
-      ${!img.uploading ? `<div class="img-del" data-del-img="${color.id}|${img.id}">✕</div>` : ""}
+      ${!img.uploading ? `<div class="img-del" data-del-img="${ge.id}|${img.id}">✕</div>` : ""}
     </div>
   `).join("");
 
   return `
-    <div class="color-row" data-color-id="${color.id}">
-      <div class="color-row-top">
-        <input class="input" placeholder="ระบุสี (เช่น ดำ, ขาว, กรม)" value="${escapeHtml(color.color_name)}" data-color-name="${color.id}">
-      </div>
-      <div class="grade-picker" data-grade-picker="${color.id}">${gradeBtns}</div>
-      ${bbRow}
-      ${histHtml}
-      <div class="img-grid" data-img-grid="${color.id}">
+    <div class="grade-entry-block" data-entry-id="${ge.id}" data-grade="${ge.grade}">
+      <div class="img-grid" data-img-grid="${ge.id}">
         ${imgGrid}
-        <div class="img-add" data-add-img="${color.id}">
+        <div class="img-add" data-add-img="${ge.id}">
           <span style="font-size:18px;">+</span><span>เพิ่มรูป</span>
         </div>
       </div>
-      <div class="color-remove-row">
-        <button data-remove-color="${color.id}">✕ ลบสีนี้</button>
+      <div class="grade-picker" data-grade-picker="${ge.id}">${gradeBtns}</div>
+      <div class="qty-row">
+        <label>จำนวน (ตัว)</label>
+        <div class="qty-stepper">
+          <button class="qty-step-btn" data-qty-dec="${ge.id}">−</button>
+          <span class="qty-val" id="qty-val-${ge.id}">${ge.quantity}</span>
+          <button class="qty-step-btn" data-qty-inc="${ge.id}">+</button>
+        </div>
+      </div>
+      ${bbRow}
+      ${noteField}
+      ${histHtml}
+      <div class="entry-remove-row">
+        <button data-remove-entry="${ge.id}">✕ ลบเกรดนี้</button>
       </div>
     </div>
   `;
 }
+
 
 function wireColorRow(item, color, itemIdx, colorIdx) {
   const root = document.getElementById("items-container");
@@ -599,97 +639,143 @@ function wireColorRow(item, color, itemIdx, colorIdx) {
     color.color_name = e.target.value;
   });
 
-  row.querySelectorAll(`[data-grade-picker="${color.id}"] .grade-opt`).forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const g = btn.dataset.g;
-      applyGradeChange(color, g);
-      renderItemsContainer();
-    });
-  });
-
-  const decBtn = row.querySelector(`[data-bb-dec="${color.id}"]`);
-  const incBtn = row.querySelector(`[data-bb-inc="${color.id}"]`);
-  if (decBtn) decBtn.addEventListener("click", () => {
-    color.bb_round = Math.max(1, (color.bb_round || 1) - 1);
-    document.getElementById(`bb-val-${color.id}`).textContent = color.bb_round;
-  });
-  if (incBtn) incBtn.addEventListener("click", () => {
-    color.bb_round = (color.bb_round || 1) + 1;
-    document.getElementById(`bb-val-${color.id}`).textContent = color.bb_round;
-  });
-
-  row.querySelector(`[data-add-img="${color.id}"]`).addEventListener("click", () => {
-    openFilePicker(color);
-  });
-
-  row.querySelectorAll(`[data-del-img]`).forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const [colorId, imgId] = btn.dataset.delImg.split("|");
-      removeDraftImage(color, imgId);
-    });
-  });
-
-  row.querySelectorAll(`[data-lightbox]`).forEach((img) => {
-    img.addEventListener("click", () => openLightbox(img.dataset.lightbox));
-  });
-
   row.querySelector(`[data-remove-color="${color.id}"]`).addEventListener("click", () => {
-    if (color.images.length > 0 || color.current_grade) {
-      if (!confirm("ลบสีนี้ทั้งหมด?")) return;
-    }
+    const hasData = color.grade_entries.some(ge => ge.images.length > 0 || ge.note);
+    if (hasData && !confirm("ลบสีนี้ทั้งหมด?")) return;
     item.colors.splice(colorIdx, 1);
     if (item.colors.length === 0) item.colors.push(newColorRow());
     renderItemsContainer();
   });
+
+  row.querySelector(`[data-add-entry="${color.id}"]`).addEventListener("click", () => {
+    color.grade_entries.push(newGradeEntry("A"));
+    renderItemsContainer();
+  });
+
+  color.grade_entries.forEach((ge, geIdx) => {
+    wireGradeEntry(color, ge, geIdx);
+  });
 }
 
-// เกรดเปลี่ยน -> บันทึกประวัติ (ค้าง C เดิมไว้เป็น history เมื่อแก้กลับมาเป็น BB)
-function applyGradeChange(color, newGrade) {
-  const prevGrade = color.current_grade;
+function wireGradeEntry(color, ge, geIdx) {
+  const root = document.getElementById("items-container");
+  const block = root.querySelector(`[data-entry-id="${ge.id}"]`);
+  if (!block) return;
+
+  block.querySelectorAll(`[data-grade-picker="${ge.id}"] .grade-opt`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const g = btn.dataset.g;
+      applyGradeChange(ge, g);
+      renderItemsContainer();
+    });
+  });
+
+  const decBtn = block.querySelector(`[data-bb-dec="${ge.id}"]`);
+  const incBtn = block.querySelector(`[data-bb-inc="${ge.id}"]`);
+  if (decBtn) decBtn.addEventListener("click", () => {
+    ge.bb_round = Math.max(1, (ge.bb_round || 1) - 1);
+    document.getElementById(`bb-val-${ge.id}`).textContent = ge.bb_round;
+  });
+  if (incBtn) incBtn.addEventListener("click", () => {
+    ge.bb_round = (ge.bb_round || 1) + 1;
+    document.getElementById(`bb-val-${ge.id}`).textContent = ge.bb_round;
+  });
+
+  block.querySelector(`[data-qty-dec="${ge.id}"]`).addEventListener("click", () => {
+    ge.quantity = Math.max(1, ge.quantity - 1);
+    document.getElementById(`qty-val-${ge.id}`).textContent = ge.quantity;
+  });
+  block.querySelector(`[data-qty-inc="${ge.id}"]`).addEventListener("click", () => {
+    ge.quantity = ge.quantity + 1;
+    document.getElementById(`qty-val-${ge.id}`).textContent = ge.quantity;
+  });
+
+  const noteEl = block.querySelector(`[data-note="${ge.id}"]`);
+  if (noteEl) noteEl.addEventListener("input", (e) => { ge.note = e.target.value; });
+
+  block.querySelector(`[data-add-img="${ge.id}"]`).addEventListener("click", () => {
+    openFilePicker(ge);
+  });
+
+  block.querySelectorAll(`[data-del-img]`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const [entryId, imgId] = btn.dataset.delImg.split("|");
+      removeDraftImage(ge, imgId);
+    });
+  });
+
+  block.querySelectorAll(`[data-lightbox]`).forEach((img) => {
+    img.addEventListener("click", () => openLightbox(img.dataset.lightbox));
+  });
+
+  block.querySelector(`[data-remove-entry="${ge.id}"]`).addEventListener("click", () => {
+    if ((ge.images.length > 0 || ge.note) && !confirm("ลบรายการเกรดนี้?")) return;
+    color.grade_entries.splice(geIdx, 1);
+    if (color.grade_entries.length === 0) color.grade_entries.push(newGradeEntry("A"));
+    renderItemsContainer();
+  });
+}
+
+// เปลี่ยนเกรด -> เก็บประวัติ (เกรด + หมายเหตุ + จำนวน ของครั้งก่อน) ไว้ใน note_history
+function applyGradeChange(ge, newGrade) {
+  const prevGrade = ge.grade;
   if (newGrade === prevGrade) return;
 
-  if (prevGrade === "C" && newGrade === "BB") {
-    color.grade_history.push({ grade: "C", at: new Date().toISOString() });
-    color.bb_round = 1;
-  } else if (prevGrade === "BB" && newGrade === "BB") {
-    // ไม่ควรเกิดเพราะ newGrade!==prevGrade guard ไว้แล้ว
-  } else if (newGrade === "BB" && prevGrade !== "C") {
-    color.bb_round = (color.bb_round || 0) + 1;
-    if (prevGrade === "BB") color.grade_history.push({ grade: "BB", bb_round: color.bb_round - 1, at: new Date().toISOString() });
+  // เก็บประวัติของค่าก่อนเปลี่ยน (เกรดเดิม + note เดิม) ไว้เสมอเมื่อมีการสลับเกรด
+  ge.note_history.push({
+    grade: prevGrade,
+    bb_round: prevGrade === "BB" ? ge.bb_round : null,
+    note: ge.note || "",
+    quantity: ge.quantity,
+    at: new Date().toISOString(),
+  });
+
+  if (newGrade === "BB") {
+    if (prevGrade === "BB") {
+      ge.bb_round = (ge.bb_round || 1) + 1;
+    } else {
+      ge.bb_round = 1;
+    }
   } else {
-    color.bb_round = null;
+    ge.bb_round = null;
   }
-  color.current_grade = newGrade;
+
+  if (!GRADE_NEEDS_NOTE[newGrade]) {
+    ge.note = "";
+  }
+  ge.grade = newGrade;
 }
 
 
 // ============================================================
-// IMAGE UPLOAD (Supabase Storage)
+// IMAGE UPLOAD (Supabase Storage) — ผูกกับ grade entry
 // ============================================================
-let pendingUploadColor = null;
+let pendingUploadEntry = null;
 
-function openFilePicker(color) {
-  pendingUploadColor = color;
+function openFilePicker(ge) {
+  pendingUploadEntry = ge;
   const input = document.getElementById("file-input");
   input.value = "";
+  input.onchange = null; // ใช้ default handler ด้านล่าง
   input.click();
 }
 
 document.getElementById("file-input").addEventListener("change", async (e) => {
+  if (typeof e.target.onchange === "function") return; // ถ้ามี custom handler (admin edit sheet) ให้มันจัดการเอง
   const files = Array.from(e.target.files || []);
-  if (files.length === 0 || !pendingUploadColor) return;
-  const color = pendingUploadColor;
+  if (files.length === 0 || !pendingUploadEntry) return;
+  const ge = pendingUploadEntry;
 
   for (const file of files) {
     const localId = uid();
     const placeholderUrl = URL.createObjectURL(file);
-    color.images.push({ id: localId, public_url: placeholderUrl, storage_path: null, uploading: true });
+    ge.images.push({ id: localId, public_url: placeholderUrl, storage_path: null, uploading: true });
   }
   renderItemsContainer();
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const imgEntry = color.images[color.images.length - files.length + i];
+    const imgEntry = ge.images[ge.images.length - files.length + i];
     try {
       const compressed = await compressImage(file, 1600, 0.78);
       const ext = "jpg";
@@ -704,13 +790,12 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
       imgEntry.storage_path = path;
       imgEntry.uploading = false;
 
-      // ถ้า color row นี้มีอยู่ในฐานข้อมูลแล้ว (ไม่ใช่ draft ใหม่) ให้บันทึกลง DB ทันที
-      if (color._dbId) {
+      if (ge._dbId) {
         await sb.from("item_color_images").insert({
-          item_color_id: color._dbId,
+          grade_entry_id: ge._dbId,
           storage_path: path,
           public_url: pub.publicUrl,
-          sort_order: color.images.length,
+          sort_order: ge.images.length,
         });
       }
     } catch (err) {
@@ -746,12 +831,12 @@ function compressImage(file, maxDim, quality) {
   });
 }
 
-async function removeDraftImage(color, imgId) {
-  const idx = color.images.findIndex((im) => im.id === imgId);
+async function removeDraftImage(ge, imgId) {
+  const idx = ge.images.findIndex((im) => im.id === imgId);
   if (idx === -1) return;
-  const img = color.images[idx];
+  const img = ge.images[idx];
   if (!confirm("ลบรูปนี้?")) return;
-  color.images.splice(idx, 1);
+  ge.images.splice(idx, 1);
   renderItemsContainer();
   if (img.storage_path) {
     try {
@@ -777,15 +862,26 @@ document.getElementById("lightbox").addEventListener("click", (e) => {
 
 
 // ============================================================
-// SUBMIT DRAFT -> Supabase (insert submission + items + colors + images)
+// SUBMIT DRAFT -> Supabase
 // ============================================================
 async function submitDraft() {
   const d = state.draft;
   if (!d.tailor_name.trim()) { toast("กรอกชื่อช่างก่อน"); return; }
   if (d.items.length === 0) { toast("เพิ่มรุ่นเสื้ออย่างน้อย 1 รายการ"); return; }
 
-  // เช็ครูปที่ยังอัปโหลดไม่เสร็จ
-  const stillUploading = d.items.some((it) => it.colors.some((c) => c.images.some((im) => im.uploading)));
+  // validate: เกรด C/BB ต้องมีหมายเหตุ
+  for (const item of d.items) {
+    for (const color of item.colors) {
+      for (const ge of color.grade_entries) {
+        if (GRADE_NEEDS_NOTE[ge.grade] && !ge.note.trim()) {
+          toast(`กรอกหมายเหตุของเกรด ${ge.grade} ในรุ่น "${item.style_name}" ก่อน`, "err");
+          return;
+        }
+      }
+    }
+  }
+
+  const stillUploading = d.items.some((it) => it.colors.some((c) => c.grade_entries.some((ge) => ge.images.some((im) => im.uploading))));
   if (stillUploading) { toast("รอรูปอัปโหลดให้เสร็จก่อน"); return; }
 
   const fab = document.getElementById("tailor-fab");
@@ -794,14 +890,12 @@ async function submitDraft() {
   setSyncDot("busy");
 
   try {
-    // 1. upsert tailor + styles ลง lookup table (เพื่อ autocomplete ครั้งหน้า)
     await sb.from("tailors").upsert({ name: d.tailor_name.trim() }, { onConflict: "name" });
     const uniqueStyles = [...new Set(d.items.map((it) => it.style_name.trim()).filter(Boolean))];
     if (uniqueStyles.length) {
       await sb.from("styles").upsert(uniqueStyles.map((name) => ({ name })), { onConflict: "name" });
     }
 
-    // 2. insert submission
     const { data: subRow, error: subErr } = await sb.from("submissions").insert({
       tailor_name: d.tailor_name.trim(),
       submitted_date: d.submitted_date,
@@ -809,7 +903,6 @@ async function submitDraft() {
     }).select().single();
     if (subErr) throw subErr;
 
-    // 3. insert items + colors + images
     for (let i = 0; i < d.items.length; i++) {
       const item = d.items[i];
       const { data: itemRow, error: itemErr } = await sb.from("submission_items").insert({
@@ -821,26 +914,39 @@ async function submitDraft() {
 
       for (let j = 0; j < item.colors.length; j++) {
         const color = item.colors[j];
-        if (!color.color_name.trim() && !color.current_grade && color.images.length === 0) continue; // skip totally empty row
+        const hasAnyData = color.grade_entries.some((ge) => ge.images.length > 0 || ge.note.trim() || ge.quantity !== 1) || color.color_name.trim();
+        if (!hasAnyData) continue;
+
         const { data: colorRow, error: colorErr } = await sb.from("item_colors").insert({
           item_id: itemRow.id,
           color_name: color.color_name.trim(),
-          current_grade: color.current_grade || "",
-          bb_round: color.bb_round || null,
-          grade_history: color.grade_history,
           sort_order: j,
         }).select().single();
         if (colorErr) throw colorErr;
 
-        const validImages = color.images.filter((im) => im.storage_path && !im._failed);
-        if (validImages.length) {
-          const rows = validImages.map((im, k) => ({
+        for (let k = 0; k < color.grade_entries.length; k++) {
+          const ge = color.grade_entries[k];
+          const { data: entryRow, error: entryErr } = await sb.from("grade_entries").insert({
             item_color_id: colorRow.id,
-            storage_path: im.storage_path,
-            public_url: im.public_url,
+            grade: ge.grade,
+            quantity: ge.quantity,
+            bb_round: ge.bb_round || null,
+            note: ge.note.trim() || null,
+            note_history: ge.note_history,
             sort_order: k,
-          }));
-          await sb.from("item_color_images").insert(rows);
+          }).select().single();
+          if (entryErr) throw entryErr;
+
+          const validImages = ge.images.filter((im) => im.storage_path && !im._failed);
+          if (validImages.length) {
+            const rows = validImages.map((im, idx2) => ({
+              grade_entry_id: entryRow.id,
+              storage_path: im.storage_path,
+              public_url: im.public_url,
+              sort_order: idx2,
+            }));
+            await sb.from("item_color_images").insert(rows);
+          }
         }
       }
     }
@@ -894,13 +1000,15 @@ function renderAdminScreen() {
   else if (state.adminTab === "report") renderAdminReport(body);
 }
 
-function flattenColors() {
-  // returns array of { sub, item, color } for every color row that has data
+// flatten ทุก grade entry ออกมาเป็น array เดียว พร้อม reference กลับไปยัง sub/item/color
+function flattenEntries() {
   const rows = [];
   state.submissions.forEach((sub) => {
     sub.submission_items.forEach((item) => {
       item.item_colors.forEach((color) => {
-        rows.push({ sub, item, color });
+        color.grade_entries.forEach((ge) => {
+          rows.push({ sub, item, color, ge });
+        });
       });
     });
   });
@@ -946,15 +1054,19 @@ function renderAdminByWeek(body) {
   wireSubCards();
 }
 
+function totalQtyForColor(color) {
+  return color.grade_entries.reduce((a, ge) => a + (ge.quantity || 0), 0);
+}
+
 function renderSubCardHtml(sub) {
   const itemCount = sub.submission_items.length;
-  const colorCount = sub.submission_items.reduce((a, it) => a + it.item_colors.length, 0);
+  const totalQty = sub.submission_items.reduce((a, it) => a + it.item_colors.reduce((a2, c) => a2 + totalQtyForColor(c), 0), 0);
   return `
     <div class="sub-card" data-sub-id="${sub.id}">
       <div class="sub-head">
         <div>
           <div class="sub-tailor">${escapeHtml(sub.tailor_name)}</div>
-          <div class="sub-date">${fmtDateThai(sub.submitted_date)} · ${itemCount} รุ่น · ${colorCount} สี</div>
+          <div class="sub-date">${fmtDateThai(sub.submitted_date)} · ${itemCount} รุ่น · ${totalQty} ตัว</div>
         </div>
         <button class="btn btn-sm btn-ghost" data-expand-sub="${sub.id}">เปิด</button>
       </div>
@@ -999,28 +1111,42 @@ function renderAdminSubDetailHtml(sub) {
 }
 
 function renderAdminColorDetailHtml(sub, item, color) {
-  const gradeClass = color.current_grade || "";
-  const gradeLabel = color.current_grade === "BB" ? `BB${color.bb_round || ""}` : (color.current_grade || "—");
-  const imgs = color.item_color_images.map((img) => `
-    <div class="img-thumb"><img src="${img.public_url}" data-lightbox="${img.public_url}"></div>
-  `).join("");
-  let histHtml = "";
-  if (color.grade_history && color.grade_history.length) {
-    const chips = color.grade_history.map((h) => `<span class="hist-chip">${h.grade === "BB" ? `BB${h.bb_round||""}` : h.grade}</span>`).join("→");
-    histHtml = `<div class="grade-history-tag">ประวัติ: ${chips}</div>`;
-  }
+  const entriesHtml = color.grade_entries.map((ge) => {
+    const gradeLabel = ge.grade === "BB" ? `BB${ge.bb_round || ""}` : ge.grade;
+    const imgs = ge.item_color_images.map((img) => `
+      <div class="img-thumb"><img src="${img.public_url}" data-lightbox="${img.public_url}"></div>
+    `).join("");
+    let histHtml = "";
+    if (ge.note_history && ge.note_history.length) {
+      const rows = ge.note_history.map((h) => {
+        const label = h.grade === "BB" ? `BB${h.bb_round || ""}` : h.grade;
+        return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note || "")}</span></div>`;
+      }).join("");
+      histHtml = `<div class="grade-history-tag">${rows}</div>`;
+    }
+    return `
+      <div class="grade-entry-block" data-grade="${ge.grade}" style="background:var(--bg-card);">
+        <div class="img-grid" style="margin-bottom:8px;">${imgs || '<span style="font-size:12px;color:var(--text-faint);">ไม่มีรูป</span>'}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span class="grade-pill ${ge.grade}">${gradeLabel}</span>
+          <span style="font-family:var(--mono);font-size:13px;color:var(--text-dim);">${ge.quantity} ตัว</span>
+        </div>
+        ${ge.note ? `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">${escapeHtml(ge.note)}</div>` : ""}
+        ${histHtml}
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm btn-ghost" style="flex:1;" data-edit-entry="${sub.id}|${item.id}|${color.id}|${ge.id}">แก้ไข</button>
+          <button class="btn btn-sm btn-danger" data-delete-entry="${ge.id}">ลบ</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
   return `
-    <div class="color-row">
-      <div class="color-row-top">
-        <span style="flex:1;font-weight:600;font-size:14px;">${escapeHtml(color.color_name) || "—"}</span>
-        ${gradeClass ? `<span class="grade-pill ${gradeClass}">${gradeLabel}</span>` : ""}
+    <div class="color-row" style="background:transparent;border-style:dashed;">
+      <div class="color-row-head">
+        <span style="flex:1;font-weight:600;font-size:14px;">${escapeHtml(color.color_name) || "ไม่ระบุสี"}</span>
       </div>
-      ${histHtml}
-      <div class="img-grid" style="margin-bottom:8px;">${imgs || '<span style="font-size:12px;color:var(--text-faint);">ไม่มีรูป</span>'}</div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn btn-sm btn-ghost" style="flex:1;" data-edit-color="${sub.id}|${item.id}|${color.id}">แก้ไข</button>
-        <button class="btn btn-sm btn-danger" data-delete-color="${color.id}">ลบสีนี้</button>
-      </div>
+      ${entriesHtml}
     </div>
   `;
 }
@@ -1035,16 +1161,16 @@ function wireAdminSubDetail(sub) {
     if (!confirm(`ลบใบงานของ "${sub.tailor_name}" วันที่ ${fmtDateThai(sub.submitted_date)} ทั้งหมด? ลบแล้วกู้คืนไม่ได้`)) return;
     await deleteSubmission(sub.id);
   });
-  document.querySelectorAll(`[data-delete-color]`).forEach((btn) => {
+  document.querySelectorAll(`[data-delete-entry]`).forEach((btn) => {
     btn.addEventListener("click", async () => {
-      if (!confirm("ลบข้อมูลสีนี้และรูปทั้งหมด?")) return;
-      await deleteColorRow(btn.dataset.deleteColor);
+      if (!confirm("ลบรายการเกรดนี้และรูปทั้งหมด?")) return;
+      await deleteGradeEntry(btn.dataset.deleteEntry);
     });
   });
-  document.querySelectorAll(`[data-edit-color]`).forEach((btn) => {
+  document.querySelectorAll(`[data-edit-entry]`).forEach((btn) => {
     btn.addEventListener("click", () => {
-      const [subId, itemId, colorId] = btn.dataset.editColor.split("|");
-      openEditColorSheet(subId, itemId, colorId);
+      const [subId, itemId, colorId, entryId] = btn.dataset.editEntry.split("|");
+      openEditEntrySheet(subId, itemId, colorId, entryId);
     });
   });
 }
@@ -1052,10 +1178,9 @@ function wireAdminSubDetail(sub) {
 async function deleteSubmission(subId) {
   setSyncDot("busy");
   try {
-    // ลบรูปใน storage ก่อน
     const sub = state.submissions.find((s) => s.id === subId);
     const paths = [];
-    sub.submission_items.forEach((it) => it.item_colors.forEach((c) => c.item_color_images.forEach((im) => paths.push(im.storage_path))));
+    sub.submission_items.forEach((it) => it.item_colors.forEach((c) => c.grade_entries.forEach((ge) => ge.item_color_images.forEach((im) => paths.push(im.storage_path)))));
     if (paths.length) await sb.storage.from(STORAGE_BUCKET).remove(paths);
     await sb.from("submissions").delete().eq("id", subId);
     toast("ลบใบงานแล้ว", "ok");
@@ -1067,15 +1192,15 @@ async function deleteSubmission(subId) {
   } finally { setSyncDot("live"); }
 }
 
-async function deleteColorRow(colorId) {
+async function deleteGradeEntry(entryId) {
   setSyncDot("busy");
   try {
     let paths = [];
-    state.submissions.forEach((s) => s.submission_items.forEach((it) => it.item_colors.forEach((c) => {
-      if (c.id === colorId) paths = c.item_color_images.map((im) => im.storage_path);
-    })));
+    state.submissions.forEach((s) => s.submission_items.forEach((it) => it.item_colors.forEach((c) => c.grade_entries.forEach((ge) => {
+      if (ge.id === entryId) paths = ge.item_color_images.map((im) => im.storage_path);
+    }))));
     if (paths.length) await sb.storage.from(STORAGE_BUCKET).remove(paths);
-    await sb.from("item_colors").delete().eq("id", colorId);
+    await sb.from("grade_entries").delete().eq("id", entryId);
     toast("ลบแล้ว", "ok");
     await loadAllData();
     renderAdminScreen();
@@ -1085,15 +1210,16 @@ async function deleteColorRow(colorId) {
   } finally { setSyncDot("live"); }
 }
 
-// ---------- Edit color sheet (admin) ----------
-function openEditColorSheet(subId, itemId, colorId) {
+// ---------- Edit grade entry sheet (admin) ----------
+function openEditEntrySheet(subId, itemId, colorId, entryId) {
   const sub = state.submissions.find((s) => s.id === subId);
   const item = sub.submission_items.find((i) => i.id === itemId);
   const color = item.item_colors.find((c) => c.id === colorId);
+  const ge = color.grade_entries.find((g) => g.id === entryId);
 
   const grades = ["A", "B", "C", "BB"];
-  const gradeBtns = grades.map((g) => `<div class="grade-opt ${color.current_grade === g ? "active" : ""}" data-eg="${g}">${g}</div>`).join("");
-  const imgs = color.item_color_images.map((img) => `
+  const gradeBtns = grades.map((g) => `<div class="grade-opt ${ge.grade === g ? "active" : ""}" data-eg="${g}">${g}</div>`).join("");
+  const imgs = ge.item_color_images.map((img) => `
     <div class="img-thumb" data-img-row="${img.id}">
       <img src="${img.public_url}">
       <div class="img-del" data-edel="${img.id}">✕</div>
@@ -1103,16 +1229,8 @@ function openEditColorSheet(subId, itemId, colorId) {
   const sheetHtml = `
     <div class="sheet-handle"></div>
     <div class="sheet-title">แก้ไข — ${escapeHtml(item.style_name)}</div>
-    <div class="sheet-sub">${escapeHtml(sub.tailor_name)} · ${fmtDateThai(sub.submitted_date)}</div>
-    <div class="field">
-      <label>สี</label>
-      <input class="input" id="edit-color-name" value="${escapeHtml(color.color_name)}">
-    </div>
-    <div class="field">
-      <label>เกรด</label>
-      <div class="grade-picker" id="edit-grade-picker">${gradeBtns}</div>
-      <div id="edit-bb-wrap"></div>
-    </div>
+    <div class="sheet-sub">${escapeHtml(sub.tailor_name)} · ${fmtDateThai(sub.submitted_date)} · สี: ${escapeHtml(color.color_name) || "ไม่ระบุ"}</div>
+
     <div class="field">
       <label>รูปภาพ</label>
       <div class="img-grid" id="edit-img-grid">
@@ -1120,12 +1238,36 @@ function openEditColorSheet(subId, itemId, colorId) {
         <div class="img-add" id="edit-add-img"><span style="font-size:18px;">+</span><span>เพิ่มรูป</span></div>
       </div>
     </div>
+
+    <div class="field">
+      <label>เกรด</label>
+      <div class="grade-picker" id="edit-grade-picker">${gradeBtns}</div>
+      <div id="edit-bb-wrap"></div>
+    </div>
+
+    <div class="field">
+      <label>จำนวน (ตัว)</label>
+      <div class="qty-row" style="margin-bottom:0;">
+        <label style="flex:1;">จำนวนตัวของเกรดนี้</label>
+        <div class="qty-stepper">
+          <button class="qty-step-btn" id="edit-qty-dec">−</button>
+          <span class="qty-val" id="edit-qty-val">${ge.quantity}</span>
+          <button class="qty-step-btn" id="edit-qty-inc">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="edit-note-wrap"></div>
+    <div id="edit-hist-wrap"></div>
+
     <button class="btn btn-primary btn-block" id="edit-save-btn">บันทึก</button>
   `;
   showSheet(sheetHtml);
 
-  let editGrade = color.current_grade;
-  let editBbRound = color.bb_round;
+  let editGrade = ge.grade;
+  let editBbRound = ge.bb_round;
+  let editQty = ge.quantity;
+  let editNote = ge.note || "";
 
   function renderBbWrap() {
     const wrap = document.getElementById("edit-bb-wrap");
@@ -1145,7 +1287,34 @@ function openEditColorSheet(subId, itemId, colorId) {
       wrap.innerHTML = "";
     }
   }
+  function renderNoteWrap() {
+    const wrap = document.getElementById("edit-note-wrap");
+    if (GRADE_NEEDS_NOTE[editGrade]) {
+      wrap.innerHTML = `
+        <div class="field">
+          <label>หมายเหตุ / สาเหตุที่ได้เกรดนี้</label>
+          <textarea class="textarea" id="edit-note-input" placeholder="เช่น เย็บไม่ตรงตะเข็บ...">${escapeHtml(editNote)}</textarea>
+        </div>`;
+      document.getElementById("edit-note-input").addEventListener("input", (e) => { editNote = e.target.value; });
+    } else {
+      wrap.innerHTML = "";
+    }
+  }
+  function renderHistWrap() {
+    const wrap = document.getElementById("edit-hist-wrap");
+    if (ge.note_history && ge.note_history.length) {
+      const rows = ge.note_history.map((h) => {
+        const label = h.grade === "BB" ? `BB${h.bb_round||""}` : h.grade;
+        return `<div class="hist-chip-row"><span class="hist-chip">${label}</span><span class="hist-note">${escapeHtml(h.note || "")}</span></div>`;
+      }).join("");
+      wrap.innerHTML = `<div class="grade-history-tag" style="margin-bottom:14px;">${rows}</div>`;
+    } else {
+      wrap.innerHTML = "";
+    }
+  }
   renderBbWrap();
+  renderNoteWrap();
+  renderHistWrap();
 
   document.querySelectorAll("#edit-grade-picker .grade-opt").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1153,19 +1322,29 @@ function openEditColorSheet(subId, itemId, colorId) {
       if (g === editGrade) return;
       document.querySelectorAll("#edit-grade-picker .grade-opt").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      if (editGrade === "C" && g === "BB") { editBbRound = 1; }
-      else if (g === "BB") { editBbRound = (editBbRound||0)+1; }
+      if (g === "BB") { editBbRound = editGrade === "BB" ? (editBbRound||1)+1 : 1; }
       else { editBbRound = null; }
       editGrade = g;
+      if (!GRADE_NEEDS_NOTE[editGrade]) editNote = "";
       renderBbWrap();
+      renderNoteWrap();
     });
+  });
+
+  document.getElementById("edit-qty-dec").addEventListener("click", () => {
+    editQty = Math.max(1, editQty - 1);
+    document.getElementById("edit-qty-val").textContent = editQty;
+  });
+  document.getElementById("edit-qty-inc").addEventListener("click", () => {
+    editQty = editQty + 1;
+    document.getElementById("edit-qty-val").textContent = editQty;
   });
 
   document.querySelectorAll("#edit-img-grid [data-edel]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const imgId = btn.dataset.edel;
       if (!confirm("ลบรูปนี้?")) return;
-      const imgRow = color.item_color_images.find((i) => i.id === imgId);
+      const imgRow = ge.item_color_images.find((i) => i.id === imgId);
       await sb.storage.from(STORAGE_BUCKET).remove([imgRow.storage_path]);
       await sb.from("item_color_images").delete().eq("id", imgId);
       toast("ลบรูปแล้ว", "ok");
@@ -1185,34 +1364,44 @@ function openEditColorSheet(subId, itemId, colorId) {
           const path = `${todayISO()}/${uid()}.jpg`;
           await sb.storage.from(STORAGE_BUCKET).upload(path, compressed, { contentType: "image/jpeg" });
           const { data: pub } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-          await sb.from("item_color_images").insert({ item_color_id: color.id, storage_path: path, public_url: pub.publicUrl, sort_order: color.item_color_images.length });
+          await sb.from("item_color_images").insert({ grade_entry_id: ge.id, storage_path: path, public_url: pub.publicUrl, sort_order: ge.item_color_images.length });
         } catch (err) { console.error(err); toast("อัปโหลดไม่สำเร็จ", "err"); }
       }
       toast("เพิ่มรูปแล้ว", "ok");
+      input.onchange = null;
       await loadAllData();
       closeSheet();
     };
     input.click();
-    // restore default handler after this use
-    setTimeout(() => { input.onchange = null; }, 0);
   });
 
   document.getElementById("edit-save-btn").addEventListener("click", async () => {
-    const newName = document.getElementById("edit-color-name").value.trim();
-    const history = color.grade_history.slice();
-    if (color.current_grade === "C" && editGrade === "BB") {
-      history.push({ grade: "C", at: new Date().toISOString() });
-    } else if (color.current_grade === "BB" && editGrade === "BB" && editBbRound !== color.bb_round) {
-      history.push({ grade: "BB", bb_round: color.bb_round, at: new Date().toISOString() });
+    if (GRADE_NEEDS_NOTE[editGrade] && !editNote.trim()) {
+      toast("กรอกหมายเหตุก่อนบันทึก", "err");
+      return;
+    }
+    const history = ge.note_history.slice();
+    const gradeChanged = editGrade !== ge.grade;
+    const noteChanged = editNote !== (ge.note || "");
+    const bbRoundChanged = editGrade === "BB" && editBbRound !== ge.bb_round;
+    if (gradeChanged || (editGrade === "BB" && bbRoundChanged)) {
+      history.push({
+        grade: ge.grade,
+        bb_round: ge.bb_round,
+        note: ge.note || "",
+        quantity: ge.quantity,
+        at: new Date().toISOString(),
+      });
     }
     try {
-      await sb.from("item_colors").update({
-        color_name: newName,
-        current_grade: editGrade || "",
+      await sb.from("grade_entries").update({
+        grade: editGrade,
+        quantity: editQty,
         bb_round: editGrade === "BB" ? editBbRound : null,
-        grade_history: history,
+        note: editNote.trim() || null,
+        note_history: history,
         updated_at: new Date().toISOString(),
-      }).eq("id", color.id);
+      }).eq("id", ge.id);
       toast("บันทึกแล้ว", "ok");
       closeSheet();
       await loadAllData();
@@ -1238,44 +1427,42 @@ document.getElementById("sheet-backdrop").addEventListener("click", (e) => {
 
 
 // ============================================================
-// ADMIN — STATS TAB
+// ADMIN — STATS TAB (นับตามจำนวนชิ้นจริง ไม่ใช่จำนวนแถว)
 // ============================================================
 function renderAdminStats(body) {
-  const rows = flattenColors().filter((r) => r.color.current_grade);
+  const rows = flattenEntries();
 
-  // เกรดไหนเยอะสุดต่อช่าง
-  const byTailorGrade = {}; // tailor -> {A,B,C,BB}
-  const byTailorStyle = {}; // tailor -> {style: count}
-  const styleCounts = {}; // overall style popularity
+  const byTailorGrade = {}; // tailor -> {A,B,C,BB} (sum of quantity)
+  const byTailorStyle = {}; // tailor -> {style: qty}
+  const styleCounts = {};   // style -> qty (overall)
 
-  rows.forEach(({ sub, item, color }) => {
+  rows.forEach(({ sub, item, ge }) => {
     const t = sub.tailor_name;
+    const qty = ge.quantity || 0;
     byTailorGrade[t] = byTailorGrade[t] || { A: 0, B: 0, C: 0, BB: 0 };
-    byTailorGrade[t][color.current_grade] = (byTailorGrade[t][color.current_grade] || 0) + 1;
+    byTailorGrade[t][ge.grade] = (byTailorGrade[t][ge.grade] || 0) + qty;
 
     byTailorStyle[t] = byTailorStyle[t] || {};
-    byTailorStyle[t][item.style_name] = (byTailorStyle[t][item.style_name] || 0) + 1;
+    byTailorStyle[t][item.style_name] = (byTailorStyle[t][item.style_name] || 0) + qty;
 
-    styleCounts[item.style_name] = (styleCounts[item.style_name] || 0) + 1;
+    styleCounts[item.style_name] = (styleCounts[item.style_name] || 0) + qty;
   });
 
   const totalByGrade = { A: 0, B: 0, C: 0, BB: 0 };
-  rows.forEach((r) => { totalByGrade[r.color.current_grade]++; });
+  rows.forEach((r) => { totalByGrade[r.ge.grade] += (r.ge.quantity || 0); });
 
-  // overview stat cards
   let html = `<div class="stat-grid">`;
   ["A", "B", "C", "BB"].forEach((g) => {
     html += `
       <div class="stat-card">
         <div class="stat-label">เกรด ${g}</div>
         <div class="stat-value" style="color:var(--grade-${g.toLowerCase()})">${totalByGrade[g]}</div>
-        <div class="stat-sub">รายการทั้งหมด</div>
+        <div class="stat-sub">ตัว ทั้งหมด</div>
       </div>`;
   });
   html += `</div>`;
 
-  // per-tailor: who has highest grade of each
-  html += `<div class="card"><div class="section-label">ช่างไหนได้เกรดอะไรเยอะสุด</div>`;
+  html += `<div class="card"><div class="section-label">ช่างไหนได้เกรดอะไรเยอะสุด (นับเป็นตัว)</div>`;
   ["A", "B", "C", "BB"].forEach((g) => {
     let topTailor = null, topCount = 0;
     Object.entries(byTailorGrade).forEach(([t, counts]) => {
@@ -1292,12 +1479,11 @@ function renderAdminStats(body) {
   });
   html += `</div>`;
 
-  // per-tailor breakdown bars
-  html += `<div class="card"><div class="section-label">สัดส่วนเกรดของช่างแต่ละคน</div>`;
+  html += `<div class="card"><div class="section-label">สัดส่วนเกรดของช่างแต่ละคน (ตัว)</div>`;
   Object.entries(byTailorGrade).forEach(([t, counts]) => {
     const total = counts.A + counts.B + counts.C + counts.BB;
     html += `<div style="margin-bottom:14px;">
-      <div style="font-size:13.5px;font-weight:600;margin-bottom:7px;">${escapeHtml(t)} <span style="color:var(--text-faint);font-weight:400;">(${total} รายการ)</span></div>`;
+      <div style="font-size:13.5px;font-weight:600;margin-bottom:7px;">${escapeHtml(t)} <span style="color:var(--text-faint);font-weight:400;">(${total} ตัว)</span></div>`;
     ["A", "B", "C", "BB"].forEach((g) => {
       const pct = total ? (counts[g] / total * 100) : 0;
       html += `
@@ -1311,8 +1497,7 @@ function renderAdminStats(body) {
   });
   html += `</div>`;
 
-  // style popularity overall
-  html += `<div class="card"><div class="section-label">รุ่นที่เย็บเยอะสุด (รวมทุกช่าง)</div>`;
+  html += `<div class="card"><div class="section-label">รุ่นที่เย็บเยอะสุด (รวมทุกช่าง, นับตัว)</div>`;
   const topStyles = Object.entries(styleCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const maxStyleCount = topStyles.length ? topStyles[0][1] : 1;
   topStyles.forEach(([style, count]) => {
@@ -1325,8 +1510,7 @@ function renderAdminStats(body) {
   });
   html += `</div>`;
 
-  // per tailor: top style
-  html += `<div class="card"><div class="section-label">ช่างไหนเย็บรุ่นอะไรเยอะสุด</div>`;
+  html += `<div class="card"><div class="section-label">ช่างไหนเย็บรุ่นอะไรเยอะสุด (ตัว)</div>`;
   Object.entries(byTailorStyle).forEach(([t, styles]) => {
     const top = Object.entries(styles).sort((a, b) => b[1] - a[1])[0];
     html += `
@@ -1368,17 +1552,19 @@ function renderAdminReport(body) {
       html += `<div class="report-day-group"><div class="report-day-title">${escapeHtml(sub.tailor_name)}</div>`;
       sub.submission_items.forEach((item) => {
         item.item_colors.forEach((color) => {
-          const thumb = color.item_color_images[0]?.public_url || "";
-          const gradeLabel = color.current_grade === "BB" ? `BB${color.bb_round||""}` : (color.current_grade || "—");
-          html += `
-            <div class="report-row">
-              ${thumb ? `<img class="report-thumb" src="${thumb}" data-lightbox="${thumb}">` : `<div class="report-thumb"></div>`}
-              <div class="report-info">
-                <div class="report-style">${escapeHtml(item.style_name)}</div>
-                <div class="report-color">${escapeHtml(color.color_name) || "—"} · ${color.item_color_images.length} รูป</div>
-              </div>
-              ${color.current_grade ? `<span class="grade-pill ${color.current_grade}">${gradeLabel}</span>` : ""}
-            </div>`;
+          color.grade_entries.forEach((ge) => {
+            const thumb = ge.item_color_images[0]?.public_url || "";
+            const gradeLabel = ge.grade === "BB" ? `BB${ge.bb_round||""}` : ge.grade;
+            html += `
+              <div class="report-row">
+                ${thumb ? `<img class="report-thumb" src="${thumb}" data-lightbox="${thumb}">` : `<div class="report-thumb"></div>`}
+                <div class="report-info">
+                  <div class="report-style">${escapeHtml(item.style_name)}</div>
+                  <div class="report-color">${escapeHtml(color.color_name) || "ไม่ระบุสี"} · ${ge.quantity} ตัว · ${ge.item_color_images.length} รูป</div>
+                </div>
+                <span class="grade-pill ${ge.grade}">${gradeLabel}</span>
+              </div>`;
+          });
         });
       });
       html += `</div>`;
